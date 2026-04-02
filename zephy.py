@@ -57,7 +57,7 @@ from timetable_functions import (
 
 # Configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_API_KEY = "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"
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
 SENDER_PASSWORD = os.getenv("SENDER_PASSWORD")
 ADMIN_ID = 6011716383
