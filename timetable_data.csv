@@ -1,0 +1,37 @@
+course,department,semester,day_of_week,subject_name,teacher_name,start_time,end_time,room_number,subject_code,group
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Monday,Personality Development and Grooming,Chef Jaya,09:30,10:30,CR2,24-THM-T-179,BOTH
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Monday,Food & Beverage Service Foundation - II,Mr. Mohit,10:30,11:30,CR2,24-THM-D1-177,BOTH
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Monday,Practical Front Office Foundation - II,Dr. Aarti,11:30,12:30,CR2,24-THM-D2-178,A
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Monday,Practical Front Office Foundation - II,Dr. Aarti,12:30,13:30,CR2,24-THM-D2-178,A
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Monday,Housekeeping Skills - II,Dr. Aarti,14:00,15:00,CR2,24-THM-S-180,BOTH
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Monday,English (AEC) Compulsory,Ummul Ma'am,15:00,16:00,CR107,AEC-ENG,BOTH
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Monday,Food Production Foundation - II,Dr. Akash,16:00,17:00,CR2,24-THM-D1-176,BOTH
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Tuesday,Personality Development and Grooming,Chef Jaya,09:30,10:30,CR2,24-THM-T-179,BOTH
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Tuesday,Food & Beverage Service Foundation - II,Mr. Mohit,10:30,11:30,CR2,24-THM-D1-177,BOTH
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Tuesday,Practical Front Office Foundation - II,Dr. Aarti,11:30,12:30,CR2,24-THM-D2-178,B
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Tuesday,Practical Front Office Foundation - II,Dr. Aarti,12:30,13:30,CR2,24-THM-D2-178,B
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Tuesday,Housekeeping Skills - II,Dr. Aarti,14:00,15:00,CR2,24-THM-S-180,BOTH
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Tuesday,English (AEC) Compulsory,Ummul Ma'am,15:00,16:00,CR107,AEC-ENG,BOTH
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Tuesday,Food Production Foundation - II,Dr. Akash,16:00,17:00,CR2,24-THM-D1-176,BOTH
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Wednesday,Personality Development and Grooming,Chef Jaya,09:30,10:30,CR2,24-THM-T-179,BOTH
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Wednesday,Front Office Foundation - II,Dr. Aarti,10:30,11:30,CR2,24-THM-D2-178,BOTH
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Wednesday,Practical Housekeeping Skills - II,Dr. Aarti,11:30,12:30,CR2,24-THM-S-180,A
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Wednesday,Practical Housekeeping Skills - II,Dr. Aarti,12:30,13:30,CR2,24-THM-S-180,A
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Wednesday,Urdu (AEC) Compulsory,Urdu Dept.,15:00,16:00,CR214,AEC-URD,BOTH
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Wednesday,Islamiat (AEC) Compulsory,Muhsin Thazhathethil,16:00,17:00,H115,AEC-ISL,BOTH
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Thursday,Personality Development and Grooming,Chef Jaya,09:30,10:30,CR2,24-THM-T-179,BOTH
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Thursday,Front Office Foundation - II,Dr. Aarti,10:30,11:30,CR2,24-THM-D2-178,BOTH
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Thursday,Practical Housekeeping Skills - II,Dr. Aarti,11:30,12:30,CR2,24-THM-S-180,B
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Thursday,Practical Housekeeping Skills - II,Dr. Aarti,12:30,13:30,CR2,24-THM-S-180,B
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Thursday,Urdu (AEC) Compulsory,Urdu Dept.,15:00,16:00,Urdu Dept.,AEC-URD,BOTH
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Thursday,Islamiat (AEC) Compulsory,Arabic Dept.,16:00,17:00,H115,AEC-ISL,BOTH
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Friday,Practical Food Production Foundation - II,Dr. Akash,09:30,10:30,Kitchen,24-THM-D1-176,A
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Friday,Practical Food Production Foundation - II,Dr. Akash,10:30,11:30,Kitchen,24-THM-D1-176,A
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Friday,Practical Food Production Foundation - II,Dr. Akash,11:30,12:30,Kitchen,24-THM-D1-176,A
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Friday,Practical F&B Service Foundation - II,Mr. Mohit,10:30,11:30,Restaurant,24-THM-D1-177,B
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Friday,Practical F&B Service Foundation - II,Mr. Mohit,11:30,12:30,Restaurant,24-THM-D1-177,B
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Friday,Practical F&B Service Foundation - II,Mr. Mohit,14:00,15:00,Restaurant,24-THM-D1-177,A
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Friday,Practical F&B Service Foundation - II,Mr. Mohit,15:00,16:00,Restaurant,24-THM-D1-177,A
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Friday,Practical Food Production Foundation - II,Dr. Akash,14:00,15:00,Kitchen,24-THM-D1-176,B
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Friday,Practical Food Production Foundation - II,Dr. Akash,15:00,16:00,Kitchen,24-THM-D1-176,B
+Bachelor's in Hotel Management,Department of tourism and hospitality,2,Friday,Practical Food Production Foundation - II,Dr. Akash,16:00,17:00,Kitchen,24-THM-D1-176,B

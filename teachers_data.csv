@@ -1,0 +1,8 @@
+teacher_id,teacher_name,department,email,subjects_taught
+T001,Chef Jaya,Hotel Management,jaya@jmi.ac.in,24-THM-T-179
+T002,Mr. Mohit,Hotel Management,mohit@jmi.ac.in,24-THM-D1-177
+T003,Dr. Aarti,Hotel Management,aarti@jmi.ac.in,24-THM-D2-178|24-THM-S-180
+T004,Dr. Akash,Hotel Management,akash@jmi.ac.in,24-THM-D1-176
+T005,Ummul,English Dept.,English,english@jmi.ac.in,AEC-ENG
+T006,Urdu Dept.,Urdu,urdu@jmi.ac.in,AEC-URD
+T007,Arabic Dept.,Arabic,arabic@jmi.ac.in,AEC-ISL
