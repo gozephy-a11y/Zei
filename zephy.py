@@ -1,3 +1,9 @@
+import os
+
+print("BOT:", os.getenv("BOT_TOKEN"))
+print("GROQ:", os.getenv("GROQ_API_KEY"))
+print("TAVILY:", os.getenv("TAVILY_API_KEY"))
+print("EMAIL:", os.getenv("SENDER_EMAIL"))
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CallbackQueryHandler, CommandHandler, filters, ContextTypes
 from groq import Groq
