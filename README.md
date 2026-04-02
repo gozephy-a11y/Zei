@@ -1,0 +1,2 @@
+# Zei
+AI for academics!
