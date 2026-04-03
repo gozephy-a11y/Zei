@@ -175,6 +175,7 @@ def setup_timetable():
     load_syllabus_data(conn)
     load_attendance_data('attendance_january_2026.csv', 'January', 2026)
     load_attendance_data('attendance_february_2026.csv', 'February', 2026)
+    load_attendance_data('attendance_march_2026.csv', 'March', 2026)
     
     conn.close()
     print("✅ Timetable system ready!\n")
