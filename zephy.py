@@ -1,9 +1,3 @@
-import os
-
-print("BOT:", os.getenv("BOT_TOKEN"))
-print("GROQ:", os.getenv("GROQ_API_KEY"))
-print("TAVILY:", os.getenv("TAVILY_API_KEY"))
-print("EMAIL:", os.getenv("SENDER_EMAIL"))
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CallbackQueryHandler, CommandHandler, filters, ContextTypes
 from groq import Groq
@@ -56,18 +50,18 @@ from timetable_functions import (
 
 
 # Configuration
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-SENDER_EMAIL = os.getenv("SENDER_EMAIL")
-SENDER_PASSWORD = os.getenv("SENDER_PASSWORD")
+BOT_TOKEN = "8711762148:AAGyEYoGMfpipRe5ZX8DnNl_gqrR05TZ96A"
+GROQ_API_KEY = "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"
+SENDER_EMAIL = "zei.zephyai@gmail.com"
+SENDER_PASSWORD = "ltjt fyqz qovz ruoo"
 ADMIN_ID = 6011716383
-SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
+SARVAM_API_KEY = "sk_i8874hi4_SVcKzuJgjl3E97gFE5Cru6Tz"
 
 # Initialize Groq client
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 # Tavily web search
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+TAVILY_API_KEY = "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"
 try:
     from tavily import TavilyClient
     tavily_client = TavilyClient(TAVILY_API_KEY)
@@ -243,12 +237,176 @@ def init_db():
                   submission_time TEXT,
                   posted_by TEXT,
                   reminder_sent INTEGER DEFAULT 0,
+                  is_active INTEGER DEFAULT 1,
                   created_at TIMESTAMP)''')
+    # Migrate: add is_active if missing
+    try:
+        c.execute("ALTER TABLE homework_log ADD COLUMN is_active INTEGER DEFAULT 1")
+    except:
+        pass
+
+    c.execute('''CREATE TABLE IF NOT EXISTS holidays
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  holiday_date DATE UNIQUE,
+                  reason TEXT,
+                  posted_by TEXT,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+
+    # ✅ Long-term memory table — AI-extracted facts about each student
+    c.execute('''CREATE TABLE IF NOT EXISTS student_memory
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  telegram_id INTEGER,
+                  memory_key TEXT,
+                  memory_value TEXT,
+                  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE(telegram_id, memory_key))''')
 
     conn.commit()
     conn.close()
 
 init_db()
+
+
+# ============================================================
+# ✅ LONG-TERM MEMORY HELPERS
+# ============================================================
+def save_student_memory(telegram_id, key, value):
+    """Save a memory fact for a student"""
+    conn = sqlite3.connect('students.db', timeout=20)
+    c = conn.cursor()
+    try:
+        c.execute('''INSERT OR REPLACE INTO student_memory
+                     (telegram_id, memory_key, memory_value, updated_at)
+                     VALUES (?, ?, ?, ?)''',
+                  (telegram_id, key, value, datetime.now()))
+        conn.commit()
+    except Exception as e:
+        print(f"[Memory save error] {e}")
+    finally:
+        conn.close()
+
+
+def get_student_memory(telegram_id):
+    """Get all memory facts for a student"""
+    conn = sqlite3.connect('students.db', timeout=20)
+    c = conn.cursor()
+    try:
+        c.execute('''SELECT memory_key, memory_value FROM student_memory
+                     WHERE telegram_id = ? ORDER BY updated_at DESC''',
+                  (telegram_id,))
+        rows = c.fetchall()
+        conn.close()
+        return {r[0]: r[1] for r in rows}
+    except Exception as e:
+        conn.close()
+        return {}
+
+
+def extract_and_save_memory(telegram_id, user_message, ai_response):
+    """Use Groq to extract memorable facts from conversation and save them"""
+    try:
+        # Only run occasionally to save API calls — every 5th message approx
+        conn = sqlite3.connect('students.db', timeout=20)
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM conversations WHERE telegram_id = ?", (telegram_id,))
+        msg_count = c.fetchone()[0]
+        conn.close()
+
+        # Run on every 5th message
+        if msg_count % 5 != 0:
+            return
+
+        existing_memory = get_student_memory(telegram_id)
+        existing_str = "\n".join(f"- {k}: {v}" for k, v in existing_memory.items()) if existing_memory else "None yet"
+
+        extract_prompt = f"""You are analyzing a student's conversation with an academic bot.
+
+User said: "{user_message}"
+Bot replied: "{ai_response[:300]}"
+
+Existing memory:
+{existing_str}
+
+Extract any NEW memorable facts about this student from this exchange.
+Only extract facts that would be useful to remember long-term.
+Examples of good facts to extract:
+- Preferred language (hinglish/english/hindi)
+- Topics they struggle with
+- Subjects they are interested in
+- Personal preferences mentioned
+- Goals or concerns mentioned
+
+Respond with JSON array of new facts ONLY (skip if nothing new):
+[{{"key": "preferred_language", "value": "hinglish"}}, ...]
+
+If nothing memorable, respond with: []"""
+
+        resp = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": extract_prompt}],
+            temperature=0.2, max_tokens=200
+        )
+        raw = resp.choices[0].message.content.strip()
+        import json as _j, re as _re
+        json_match = _re.search(r'\[.*\]', raw, _re.DOTALL)
+        if json_match:
+            facts = _j.loads(json_match.group())
+            for fact in facts:
+                if fact.get('key') and fact.get('value'):
+                    save_student_memory(telegram_id, fact['key'], fact['value'])
+                    print(f"[Memory] Saved: {fact['key']} = {fact['value']} for {telegram_id}")
+    except Exception as e:
+        print(f"[Memory extract error] {e}")
+
+
+# ============================================================
+# ✅ HOLIDAY HELPERS
+# ============================================================
+def save_holiday(holiday_date, reason, posted_by):
+    conn = sqlite3.connect('students.db', timeout=20)
+    c = conn.cursor()
+    try:
+        c.execute('''INSERT OR REPLACE INTO holidays (holiday_date, reason, posted_by)
+                     VALUES (?, ?, ?)''', (str(holiday_date), reason, str(posted_by)))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        conn.close()
+        print(f"[Holiday save error] {e}")
+        return False
+
+def get_holiday(target_date):
+    conn = sqlite3.connect('students.db', timeout=20)
+    c = conn.cursor()
+    try:
+        c.execute("SELECT holiday_date, reason FROM holidays WHERE holiday_date = ?",
+                  (str(target_date),))
+        row = c.fetchone()
+        conn.close()
+        return {'date': row[0], 'reason': row[1]} if row else None
+    except Exception as e:
+        conn.close()
+        return None
+
+def get_upcoming_holidays(days_ahead=30):
+    conn = sqlite3.connect('students.db', timeout=20)
+    c = conn.cursor()
+    try:
+        today = datetime.now().date().isoformat()
+        future = (datetime.now() + timedelta(days=days_ahead)).date().isoformat()
+        c.execute('''SELECT holiday_date, reason FROM holidays
+                     WHERE holiday_date >= ? AND holiday_date <= ?
+                     ORDER BY holiday_date''', (today, future))
+        rows = c.fetchall()
+        conn.close()
+        return [{'date': r[0], 'reason': r[1]} for r in rows]
+    except Exception as e:
+        conn.close()
+        return []
+
+def is_today_holiday():
+    return get_holiday(datetime.now().date())
 
 # ============================================================
 # LAST ACTIVE / USER STATS
@@ -461,10 +619,11 @@ def get_homework_from_db(course, department, semester, student_group=None, subje
     c = conn.cursor()
     today = datetime.now().date()
 
-    query = '''SELECT subject_name, teacher_name, description, submission_date, submission_time
+    query = '''SELECT id, subject_name, teacher_name, description, submission_date, submission_time
                FROM homework_log
                WHERE course = ? AND department = ? AND semester = ?
-               AND submission_date >= ?'''
+               AND submission_date >= ?
+               AND (is_active IS NULL OR is_active = 1)'''
     params = [course, department, semester, str(today)]
 
     if student_group and student_group != 'BOTH':
@@ -480,13 +639,13 @@ def get_homework_from_db(course, department, semester, student_group=None, subje
     rows = c.fetchall()
     conn.close()
 
-    return [{'subject': row[0], 'teacher': row[1], 'description': row[2],
-             'due_date': row[3], 'due_time': row[4]} for row in rows]
+    return [{'id': row[0], 'subject': row[1], 'teacher': row[2], 'description': row[3],
+             'due_date': row[4], 'due_time': row[5]} for row in rows]
 
 # ============================================================
 # CONVERSATION & STUDENT HELPERS
 # ============================================================
-def get_conversation_history(telegram_id, limit=20):
+def get_conversation_history(telegram_id, limit=30):
     conn = sqlite3.connect('students.db')
     c = conn.cursor()
     c.execute('''SELECT role, content FROM conversations
@@ -637,8 +796,8 @@ def get_schedule_for_day(course, dept, sem, group, day_name):
 # ============================================================
 # ✅ GROQ OCR - Extract text from image
 # ============================================================
-async def groq_ocr_from_image(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
-    """Use Groq vision to extract text from image (OCR)"""
+async def groq_ocr_from_image(image_bytes: bytes, mime_type: str = "image/jpeg") -> dict:
+    """Use Groq Llama 4 Scout vision to understand image — returns text + description"""
     try:
         b64_image = base64.b64encode(image_bytes).decode('utf-8')
         response = groq_client.chat.completions.create(
@@ -655,18 +814,29 @@ async def groq_ocr_from_image(image_bytes: bytes, mime_type: str = "image/jpeg")
                         },
                         {
                             "type": "text",
-                            "text": "Extract ALL text from this image exactly as written. Include everything: handwritten, printed, numbers, dates. Output only the extracted text, nothing else."
+                            "text": """Analyze this image completely. Return a JSON object with:
+1. "extracted_text": ALL text visible in image (handwritten, printed, numbers — copy exactly)
+2. "image_description": What the image shows (scene, objects, people, food, diagrams, charts, etc.)
+3. "image_type": one of [text_document, food_dish, chart_diagram, handwriting, scene, receipt, other]
+
+Respond ONLY with valid JSON, no markdown:
+{"extracted_text": "...", "image_description": "...", "image_type": "..."}"""
                         }
                     ]
                 }
             ],
             temperature=0.1,
-            max_tokens=1000
+            max_tokens=1500
         )
-        return response.choices[0].message.content.strip()
+        raw = response.choices[0].message.content.strip()
+        import json as _j, re as _re
+        json_match = _re.search(r'\{.*\}', raw, _re.DOTALL)
+        if json_match:
+            return _j.loads(json_match.group())
+        return {"extracted_text": raw, "image_description": "", "image_type": "text_document"}
     except Exception as e:
-        print(f"Groq OCR error: {e}")
-        return ""
+        print(f"Groq Vision error: {e}")
+        return {"extracted_text": "", "image_description": "", "image_type": "other"}
 
 # ============================================================
 # ✅ SARVAM BULBUL v3 TTS - speaker: shubh, 48khz
@@ -1334,16 +1504,36 @@ CRITICAL: NO TEXT RESPONSES - ONLY JSON!"""
     else:
         student_details = get_student_details(reg_status['student_id'])
         greeting = get_greeting()
+        # ✅ Full name for AI — first + middle + last
+        full_name = student_details['name']
         first_name = student_details['name'].split()[0]
 
         now = datetime.now()
         current_time = now.strftime('%H:%M')
         today_name = now.strftime('%A')
-        today_date = now.strftime('%B %d, %Y')
+        today_date = now.strftime('%d %B %Y')
         weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
         cr_info = is_cr(student_details['student_id'])
         cr_status_text = "🎖️ You are a Class Representative (CR)" if cr_info['is_cr'] else ""
+
+        # ✅ Holiday awareness in AI context
+        today_holiday = get_holiday(datetime.now().date())
+        today_weekday_num = datetime.now().weekday()
+        holiday_context = ""
+        if today_holiday:
+            holiday_context = f"\n⚠️ TODAY IS A HOLIDAY: {today_holiday['reason']} — No classes today"
+        elif today_weekday_num == 5:
+            holiday_context = "\n⚠️ TODAY IS SATURDAY — No classes (college closed)"
+        elif today_weekday_num == 6:
+            holiday_context = "\n⚠️ TODAY IS SUNDAY — No classes (college closed)"
+
+        # Upcoming holidays
+        upcoming_hols = get_upcoming_holidays(days_ahead=14)
+        if upcoming_hols:
+            holiday_context += "\n📅 UPCOMING HOLIDAYS: " + ", ".join(
+                f"{h['date']} ({h['reason']})" for h in upcoming_hols
+            )
         urdu_type = student_details.get('urdu_type', 'regular')
 
         today_schedule = get_today_schedule(
@@ -1423,7 +1613,12 @@ CRITICAL: NO TEXT RESPONSES - ONLY JSON!"""
         user_msg_lower = user_message.lower()
 
         asking_about_homework = any(w in user_msg_lower for w in [
-            'homework', 'hw', 'assignment', 'submit', 'kya karna h', 'kya submit'])
+            'homework', 'hw', 'assignment', 'submit', 'kya karna h', 'kya submit',
+            'koi kaam', 'kya kaam', 'kuch karna', 'kuch submit', 'pending kaam',
+            'pending h', 'pending hai', 'due h', 'due hai', 'jama karna',
+            'journal', 'project', 'practical file', 'file submit',
+            'kab jama', 'kab submit', 'submit karna', 'kya dena h',
+            'task', 'work pending', 'baaki kaam'])
         asking_about_attendance = any(w in user_msg_lower for w in [
             'attendance', 'present', 'absent', 'meri attendance', 'kitni attendance'])
         asking_about_syllabus = any(w in user_msg_lower for w in [
@@ -1431,14 +1626,20 @@ CRITICAL: NO TEXT RESPONSES - ONLY JSON!"""
             'kitne unit', 'units hue', 'unit hua', 'unit ho', 'unit complete',
             'units complete', 'progress', 'kitna hua', 'kya cover', 'cover hua',
             'pending unit', 'units pending', 'f&b unit', 'food production unit',
-            'housekeeping unit', 'front office unit'])
+            'housekeeping unit', 'front office unit',
+            'kitna bacha', 'kitna baki', 'kya baaki hai', 'units left',
+            'kitne topics', 'exam syllabus', 'exam mein kya aayega',
+            'poora course', 'course content'])
         asking_about_history = any(w in user_msg_lower for w in [
             'kya padhaya', 'last class', 'pichli class', 'aakhri class', 'what was taught',
             'kya hua tha', 'class mein kya', 'practical mein kya', 'theory mein kya',
             'ko kya', 'date ko', 'january', 'february', 'march', 'april', 'may', 'june',
             'july', 'august', 'september', 'october', 'november', 'december',
             'kal kya', 'parso kya', 'last week', 'pichle hafte', 'class history',
-            'padhaya', 'banaya', 'banayi', 'sikha', 'sikhaya'
+            'padhaya', 'banaya', 'banayi', 'sikha', 'sikhaya',
+            'pichla class', 'pichla practical', 'pichli theory', 'last practical',
+            'last theory', 'aaj kya hua', 'kya cover hua', 'kya sikhaya',
+            'topics covered', 'what did we do', 'what happened in class'
         ])
 
         date_in_query = re.search(
@@ -1453,27 +1654,78 @@ CRITICAL: NO TEXT RESPONSES - ONLY JSON!"""
 
         context_parts = []
         today_date_full = now.strftime('%A, %d %B %Y')
-        context_parts.append(f"""You are Zei by Zephy Intelligence - Smart Academic Assistant.
+        context_parts.append(f"""You are Zei by Zephy Intelligence — Smart Academic Assistant for JMI BHM students.
 
-Student: {first_name} | {student_details['course']} Sem-{student_details['semester']} | Group {student_details['group']}
+━━━ STUDENT PROFILE (ground truth — never contradict this) ━━━
+Full name    : {full_name}
+First name   : {first_name}
+Student ID   : {student_details['student_id']}
+Course       : {student_details['course']}
+Department   : {student_details['department']}
+Semester     : {student_details['semester']}
+Group        : {student_details['group']}
+Email        : {student_details['email']}
+Urdu type    : {student_details.get('urdu_type', 'regular')}
 {cr_status_text}
 
-⚠️ DATE CONTEXT (CRITICAL — USE THIS ONLY, NEVER GUESS):
-- TODAY = {today_date_full}
-- Current time = {current_time}
-- Day number in week = {now.weekday()} (0=Monday, 6=Sunday)
-- When user says "aaj" or "today" → {today_date_full}
-- When user says "kal" or "tomorrow" → {(now + timedelta(days=1)).strftime('%A, %d %B %Y')}
-- When user says "parso" → {(now + timedelta(days=2)).strftime('%A, %d %B %Y')}
-- NEVER use any other date as today. NEVER confuse day name with date.
+━━━ NAME RULES ━━━
+- Address student as "{first_name}" in all replies
+- "mera naam kya hai" / "what is my name" → say "{full_name}"
+- "mera student ID" / "mera roll number" → say "{student_details['student_id']}"
+- "mera group" → say "Group {student_details['group']}"
+- "mera email" → say "{student_details['email']}"
+- "mera semester" → say "Semester {student_details['semester']}"
+- NEVER make up or change any of these details
 
-LANGUAGE RULE — MOST IMPORTANT:
-- DEFAULT language is ENGLISH — always start in English
-- If user writes in Hindi (Devanagari) → switch to Hindi
-- If user writes in Hinglish (Roman Hindi like "samjhao", "batao") → switch to Hinglish
-- If user writes in English → reply in English
-- Mirror user's language from their message
-- NEVER default to Hinglish unprompted""")
+━━━ CLASS REPRESENTATIVES ━━━
+- AIBAB Khan — CR (verified from records)
+- Rehan Khan — CR (verified from records)
+- "CR kaun hai" / "who is CR" → AIBAB Khan aur Rehan Khan
+- Both CRs have access to /update /hw /lasttheory /complete /holiday /activecommands
+
+━━━ TEACHERS & SUBJECTS ━━━
+- Akash sir (Chef Akash / Dr. Akash)     → Food Production Foundation - II (BHM-201)
+- Mohit sir (Mr. Mohit)                   → Food & Beverage Service Foundation - II (BHM-202)
+- Ummul maam                              → Housekeeping Skills - II (BHM-203)
+- Aarti maam (Dr. Aarti)                  → Front Office Foundation - II (BHM-204)
+- Jaya maam (Chef Jaya)                   → Personality Development and Grooming (BHM-205)
+- "Akash sir ki class kab hai" → check Food Production in schedule
+- "Aarti maam ne kya padhaya" → check Front Office in class history
+
+━━━ DATE & TIME (USE ONLY THIS — NEVER GUESS) ━━━
+- TODAY         = {today_date_full}
+- Current time  = {current_time}
+- Tomorrow      = {(now + timedelta(days=1)).strftime('%A, %d %B %Y')}
+- Day after     = {(now + timedelta(days=2)).strftime('%A, %d %B %Y')}
+- Weekday num   = {now.weekday()} (0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun)
+- NEVER confuse day name with date
+- NEVER say "I don't know today's date"
+{holiday_context}
+
+━━━ LANGUAGE RULES ━━━
+- User in English    → reply in English
+- User in Hindi      → reply in Hindi
+- User in Hinglish   → reply in Hinglish
+- Mirror EXACTLY — never switch unprompted
+- Casual tone — smart classmate, not textbook
+- Short replies unless explanation needed
+
+━━━ MEMORY RULES ━━━
+- You have access to full conversation history above
+- If user refers to "jo tune abhi bataya" / "as you said" → refer to your previous reply
+- "dobara batao" / "repeat karo" → repeat your last response
+- If user says "galat tha" / "that was wrong" → acknowledge and correct
+- Track what the user has asked in this session — don't ask again what they already told you
+- User preferences from this session: remember their language, topic interest, etc.""")
+
+        # ✅ Inject long-term memory from DB into context
+        _lt_memory = get_student_memory(telegram_id)
+        if _lt_memory:
+            _mem_lines = "\n".join(f"- {k}: {v}" for k, v in _lt_memory.items())
+            context_parts.append(f"""━━━ LONG-TERM MEMORY (learned from past sessions) ━━━
+{_mem_lines}
+
+Use this to personalize responses. E.g. if preferred_language = hinglish, default to hinglish.""")
 
         if active_updates:
             context_parts.append(f"📢 ACTIVE UPDATES:\n{updates_text}")
@@ -1540,15 +1792,41 @@ LANGUAGE RULE — MOST IMPORTANT:
             )
             hw_text = format_homework_for_ai(pending_homework)
             if local_hw:
-                hw_text += "\n📝 HOMEWORK LOG:\n"
-                for hw in local_hw:
-                    hw_text += f"• {hw['subject']}"
+                hw_text += "\n📝 PENDING HOMEWORK — show EVERY word, do NOT summarize or shorten:\n"
+                for i, hw in enumerate(local_hw, 1):
+                    hw_text += f"\n{i}. Subject: {hw['subject']}\n"
                     if hw.get('teacher'):
-                        hw_text += f" ({hw['teacher']})"
-                    hw_text += f": {hw['description']} - Due: {hw['due_date']}"
+                        hw_text += f"   Teacher: {hw['teacher']}\n"
+                    # Show full description — every line
+                    desc_lines = [l.strip() for l in hw['description'].split('\n') if l.strip()]
+                    if len(desc_lines) > 1:
+                        hw_text += f"   Topics:\n"
+                        for dl in desc_lines:
+                            hw_text += f"   - {dl}\n"
+                    else:
+                        hw_text += f"   Task: {hw['description']}\n"
+                    hw_text += f"   Due: {hw['due_date']}"
                     if hw.get('due_time'):
                         hw_text += f" at {hw['due_time']}"
                     hw_text += "\n"
+            if not local_hw and not pending_homework:
+                hw_text = "NO PENDING HOMEWORK in DB."
+            hw_text += """
+CRITICAL FORMAT RULES for homework response:
+- Show EVERY topic/line — NEVER summarize or cut short
+- Format:
+  📝 *Pending Homework:*
+
+  1. [Subject Name]
+     Teacher: [name]
+     Topics:
+     - [exact topic 1]
+     - [exact topic 2]
+     - [all topics...]
+     Due: [date]
+
+- If no homework: say "Abhi koi homework posted nahi hai."
+- NEVER combine topics into a summary sentence"""
             context_parts.append(hw_text)
 
         if asking_about_attendance:
@@ -1776,7 +2054,7 @@ Examples:
             print("[Web] ⚠️ Both sources failed — disclaimer will be added")
 
     messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(history[-10:])
+    messages.extend(history[-20:])
     messages.append({"role": "user", "content": user_message})
 
     try:
@@ -1784,7 +2062,7 @@ Examples:
             model="llama-3.3-70b-versatile",
             messages=messages,
             temperature=0.4,
-            max_tokens=2500  # Increased for full syllabus display
+            max_tokens=3000
         )
         ai_response = response.choices[0].message.content
         # Fix double-star bold (**text**) -> Telegram single-star (*text*)
@@ -1792,6 +2070,14 @@ Examples:
         ai_response = _re.sub('\\*\\*(.+?)\\*\\*', lambda m: '*' + m.group(1) + '*', ai_response)
         save_message(telegram_id, "user", user_message)
         save_message(telegram_id, "assistant", ai_response)
+        # ✅ Async memory extraction — fire and forget
+        try:
+            import asyncio as _asyncio
+            _asyncio.get_event_loop().run_in_executor(
+                None, extract_and_save_memory, telegram_id, user_message, ai_response
+            )
+        except Exception:
+            pass
         return ai_response
     except Exception as e:
         print(f"Groq error: {e}")
@@ -1808,14 +2094,17 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Please register first!")
         return
 
-    try:
-        processing_msg = await update.message.reply_text("📷 Reading image... 🔍")
+    # Skip /addposter and /lastpractical captions — handled by their own handlers
+    caption = update.message.caption or ""
+    if caption.strip().lower().startswith('/addposter') or caption.strip().lower().startswith('/lastpractical'):
+        return
 
-        # Get the highest resolution photo
+    try:
+        processing_msg = await update.message.reply_text("📷 Analyzing image... 🔍")
+
         photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
 
-        # Download image bytes
         img_path = f"ocr_{telegram_id}_{int(datetime.now().timestamp())}.jpg"
         await file.download_to_drive(img_path)
 
@@ -1827,32 +2116,43 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
-        # Run Groq OCR
-        extracted_text = await groq_ocr_from_image(image_bytes, "image/jpeg")
+        # ✅ Groq Llama 4 Scout Vision — understand image fully
+        vision_result = await groq_ocr_from_image(image_bytes, "image/jpeg")
+        extracted_text = vision_result.get("extracted_text", "").strip()
+        image_description = vision_result.get("image_description", "").strip()
+        image_type = vision_result.get("image_type", "other")
 
         await processing_msg.delete()
 
-        if not extracted_text:
-            await update.message.reply_text("❌ Could not read text from image. Please try a clearer photo.")
+        if not extracted_text and not image_description:
+            await update.message.reply_text("❌ Could not analyze image. Please try a clearer photo.")
             return
 
-        # Show extracted text
-        caption = update.message.caption or ""
-        display_text = extracted_text[:300] + "..." if len(extracted_text) > 300 else extracted_text
+        # ✅ Build context for AI — include both text AND visual description
+        # Do NOT show extracted text or description to user — only AI response shown
+        user_caption = caption.strip()
 
-        await update.message.reply_text(
-            f"📷 *Text extracted from image:*\n\n`{display_text}`\n\n🤖 Processing...",
-            parse_mode='Markdown'
-        )
+        if image_type == "text_document" or (extracted_text and len(extracted_text) > 20):
+            # Primarily a text/document image
+            ai_input = f"{user_caption}\n\nImage contains this text:\n{extracted_text}"
+            if image_description:
+                ai_input += f"\n\nImage context: {image_description}"
+        elif image_type == "food_dish":
+            ai_input = f"{user_caption}\n\nImage shows: {image_description}"
+            if extracted_text:
+                ai_input += f"\n\nText in image: {extracted_text}"
+        else:
+            # General image — use both
+            ai_input = f"{user_caption}\n\nImage analysis: {image_description}"
+            if extracted_text:
+                ai_input += f"\n\nText found: {extracted_text}"
 
-        # Combine caption + extracted text and pass to AI
-        combined_message = f"{caption}\n\nImage text: {extracted_text}" if caption else f"Image text: {extracted_text}"
-        ai_response = get_ai_response(telegram_id, combined_message)
-        await process_ai_actions(update, context, ai_response, telegram_id, user_message=None)
+        ai_response = get_ai_response(telegram_id, ai_input)
+        await process_ai_actions(update, context, ai_response, telegram_id, user_message=user_caption or ai_input)
 
     except Exception as e:
-        print(f"Image OCR error: {e}")
-        await update.message.reply_text("❌ Error reading image. Please try again.")
+        print(f"Image Vision error: {e}")
+        await update.message.reply_text("❌ Error analyzing image. Please try again.")
 
 # ============================================================
 # 🔥 VOICE HANDLER - transcribe → AI text reply → Sarvam voice reply
@@ -1939,7 +2239,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                         await update.message.reply_voice(
                             voice=open(audio_path, 'rb'),
-                            caption="🔊 Voice reply"
+                            caption=""
                         )
 
                         try:
@@ -2088,6 +2388,18 @@ async def send_class_reminders(application):
     while True:
         try:
             now = datetime.now()
+
+            # ✅ Skip reminders on weekends and holidays
+            today_weekday = now.weekday()  # 5=Sat, 6=Sun
+            if today_weekday >= 5:
+                await asyncio.sleep(3600)  # sleep 1hr on weekends
+                continue
+            today_holiday = get_holiday(now.date())
+            if today_holiday:
+                print(f"[Reminders] Skipping — holiday: {today_holiday['reason']}")
+                await asyncio.sleep(3600)
+                continue
+
             current_day = now.strftime('%A')
             reminder_time = (now + timedelta(minutes=15)).strftime('%H:%M')
 
@@ -2190,7 +2502,7 @@ async def send_homework_reminders(application):
                         days_left = (date_obj.date() - now.date()).days
                         due_text = "TOMORROW" if days_left == 0 else (
                             f"in {days_left + 1} days" if days_left == 1 else f"in {days_left} days")
-                        date_str = date_obj.strftime('%A, %B %d')
+                        date_str = date_obj.strftime('%A, %d %B')
                     except:
                         due_text = "soon"
                         date_str = str(hw['submission_date'])
@@ -2293,7 +2605,7 @@ Respond ONLY with JSON (no extra text):
                 recorded_by=student_details['student_id'],
                 photo_path=None
             )
-            date_display = class_date.strftime('%A, %B %d') if class_date != datetime.now().date() else f"Today ({datetime.now().strftime('%B %d')})"
+            date_display = class_date.strftime('%A, %d %B') if class_date != datetime.now().date() else f"Today ({datetime.now().strftime('%d %B')})"
             await update.message.reply_text(
                 f"✅ *Theory Class Recorded!*\n\n"
                 f"📚 Subject: {result.get('subject', parsed['subject_name'])}\n"
@@ -2384,7 +2696,7 @@ Respond ONLY with valid JSON:
                 recorded_by=student_details['student_id'],
                 photo_path=photo_path
             )
-            date_display = class_date.strftime('%A, %B %d') if class_date != datetime.now().date() else f"Today ({datetime.now().strftime('%B %d')})"
+            date_display = class_date.strftime('%A, %d %B') if class_date != datetime.now().date() else f"Today ({datetime.now().strftime('%d %B')})"
             await update.message.reply_text(
                 f"✅ *Practical Recorded!*\n\n"
                 f"🔬 Subject: {result.get('subject', parsed['subject_name'])}\n"
@@ -2436,22 +2748,41 @@ async def handle_cr_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ✅ AI generates smart broadcast message (no fixed template)
-    ai_msg_prompt = f"""You are Zei, a student bot assistant.
+    # ✅ Teacher → Subject for update context
+    _upd_teacher_map = {
+        'jaya': 'Personality Development', 'jaya maam': 'Personality Development',
+        "jaya ma'am": 'Personality Development', 'chef jaya': 'Personality Development',
+        'akash': 'Food Production', 'akash sir': 'Food Production',
+        'chef akash': 'Food Production', 'dr akash': 'Food Production',
+        'mohit': 'F&B Service', 'mohit sir': 'F&B Service', 'mr mohit': 'F&B Service',
+        'aarti': 'Front Office', 'aarti maam': 'Front Office', "aarti ma'am": 'Front Office',
+        'ummul': 'Housekeeping', 'ummul maam': 'Housekeeping',
+    }
+    _upd_lower = update_text.lower()
+    _detected_subj_for_msg = None
+    for _kw, _sn in _upd_teacher_map.items():
+        if _kw in _upd_lower:
+            _detected_subj_for_msg = _sn
+            break
 
-A Class Representative has sent this update: "{update_text}"
+    ai_msg_prompt = f"""You are Zei, the smart academic assistant for JMI BHM students.
 
-Generate a clear, friendly broadcast message for students in Hindi/English mix.
-Keep it under 100 words. Include relevant emojis.
-Do NOT use any template format. Write naturally based on what the CR said.
+CR ne yeh update diya hai: "{update_text}"
+{f"Detected subject: {_detected_subj_for_msg}" if _detected_subj_for_msg else ""}
 
-Examples:
-Input: "Kal food production cancel hai"
-Output: "📢 Class Update!\n\n❌ Kal (Thursday) Food Production ki class CANCEL hai. Koi class nahi hogi.\n\n- Posted by CR 🎖️"
+Ek clear, natural broadcast message banao students ke liye. Rules:
+- Hinglish mein likho (Hindi + English mix) — jaise CR ne likha, waise hi tone
+- Subject ka FULL naam use karo (e.g. "Jaya ma'am" → "Personality Development and Grooming")
+- Start with "📢 *Class Update!*" 
+- Cancellation: "❌ [Subject] ki class CANCEL hai [date/day]"
+- Time change: "⏰ [Subject] ab [new time] baje hogi [date/day]"
+- Room change: "🔄 [Subject] ab [Room X] mein hogi"
+- Extra class: "➕ Extra class of [Subject] [date/day] at [time]"
+- End with: "\n\n_— CR 🎖️_"
+- 60-80 words MAX
+- Date/day clearly mention karo
 
-Input: "Monday English 2 baje hogi"  
-Output: "📢 Class Update!\n\n⏰ Monday ki English class ab 2:00 PM pe hogi (time change).\n\n- Posted by CR 🎖️"
-
-Respond with ONLY the broadcast message text, nothing else."""
+ONLY broadcast text output karo, kuch aur nahi."""
 
     try:
         ai_resp = groq_client.chat.completions.create(
@@ -2588,20 +2919,100 @@ async def handle_homework(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    detected_subject = detect_subject_name(hw_text)
+    # ✅ Subject detection for homework — priority order:
+    # 1. Explicit subject keywords in text (highest priority)
+    # 2. Teacher name mapping
+    # 3. Fallback to generic detection
+
+    _hw_lower = hw_text.lower()
+    detected_subject = None
+
+    # Priority 1: Explicit subject keywords — checked FIRST
+    _hw_subject_kw = [
+        # Housekeeping — must be before F&B to catch "housekeeping journal"
+        (['housekeeping', 'hk ', 'house keeping', 'bhm-203', 'bhm203'], 'Housekeeping Skills - II'),
+        # Front Office
+        (['front office', 'fo ', 'front desk', 'reception', 'bhm-204', 'bhm204',
+          'check-in', 'check in', 'check out', 'checkout', 'registration form',
+          'c-form', 'reservation', 'walk-in', 'walk in'], 'Front Office Foundation - II'),
+        # Food Production
+        (['food production', 'food prod', 'bhm-201', 'bhm201', 'kitchen',
+          'knife', 'cuts', 'stock', 'sauce', 'soup', 'egg', 'poultry'], 'Food Production Foundation - II'),
+        # F&B Service
+        (['food and beverage', 'f&b', 'fnb', 'bhm-202', 'bhm202',
+          'service', 'table setting', 'waiter', 'beverage'], 'Food & Beverage Service Foundation - II'),
+        # Personality Development
+        (['personality', 'grooming', 'communication', 'bhm-205', 'bhm205',
+          'etiquette', 'english'], 'Personality Development and Grooming'),
+    ]
+
+    for _kws, _subj in _hw_subject_kw:
+        if any(kw in _hw_lower for kw in _kws):
+            detected_subject = _subj
+            break
+
+    # Priority 2: Teacher name (only if no subject keyword found)
+    if not detected_subject:
+        _hw_teacher_map = {
+            'aarti': 'Front Office Foundation - II',
+            'dr aarti': 'Front Office Foundation - II',
+            'dr. aarti': 'Front Office Foundation - II',
+            'aarti maam': 'Front Office Foundation - II',
+            'aarti mam': 'Front Office Foundation - II',
+            'akash': 'Food Production Foundation - II',
+            'chef akash': 'Food Production Foundation - II',
+            'dr akash': 'Food Production Foundation - II',
+            'akash sir': 'Food Production Foundation - II',
+            'mohit': 'Food & Beverage Service Foundation - II',
+            'mohit sir': 'Food & Beverage Service Foundation - II',
+            'mr mohit': 'Food & Beverage Service Foundation - II',
+            'jaya': 'Personality Development and Grooming',
+            'jaya maam': 'Personality Development and Grooming',
+            'jaya mam': 'Personality Development and Grooming',
+            'chef jaya': 'Personality Development and Grooming',
+            'ummul': 'Housekeeping Skills - II',
+            'ummul maam': 'Housekeeping Skills - II',
+        }
+        for _teacher_kw, _subj in _hw_teacher_map.items():
+            if _teacher_kw in _hw_lower:
+                detected_subject = _subj
+                break
+
+    # Priority 3: Generic detection fallback
+    if not detected_subject:
+        detected_subject = detect_subject_name(hw_text)
     if not detected_subject:
         teacher_subject = get_subject_from_teacher(hw_text)
         if teacher_subject:
             detected_subject = teacher_subject
 
-    parse_prompt = f"""Extract homework details from: "{hw_text}"
+    # ✅ Extract raw topics from hw_text — do NOT summarize
+    import re as _hw_re2
+    _raw = hw_text.strip()
 
-{'Detected subject: ' + detected_subject if detected_subject else 'No subject detected yet - extract from text'}
+    # Remove "submit it on X" / "due X" trailing lines
+    _raw = _hw_re2.sub(r'(?:and )?(?:submit(?: it)? (?:on|by)|due(?: date)?)[^\n]*$',
+                       '', _raw, flags=_hw_re2.IGNORECASE | _hw_re2.MULTILINE).strip()
 
-Extract teacher name if mentioned (like "Mohit sir", "Akash sir", "Rajesh ma'am", etc.)
+    # Try to split instruction line from topics (e.g. "complete journal: \ntopic1\ntopic2")
+    _colon_match = _hw_re2.match(r'^(.{3,80}?):\s*\n(.+)', _raw, _hw_re2.DOTALL)
+    if _colon_match:
+        _task_instruction = _colon_match.group(1).strip()
+        _topics_only = _colon_match.group(2).strip()
+    else:
+        # First line = instruction, rest = topics
+        _lines_all = _raw.split('\n')
+        _task_instruction = _lines_all[0].strip()
+        _topics_only = '\n'.join(_lines_all[1:]).strip() if len(_lines_all) > 1 else _raw
 
-Respond ONLY with JSON:
-{{"subject": "{'...' if not detected_subject else detected_subject}", "teacher_name": "...", "description": "...", "submission_day": "Monday/Tuesday/etc or date like '20th February' or 'tomorrow'", "submission_time": "HH:MM or null"}}"""
+    if not _topics_only:
+        _topics_only = _raw
+    parse_prompt = f"""Extract from: "{hw_text}"
+
+{'Detected subject: ' + detected_subject if detected_subject else ''}
+
+Return ONLY JSON — extract teacher name and submission date only:
+{{"teacher_name": "name if mentioned, else empty string", "submission_day": "Monday/Tuesday/date like 6th April/tomorrow/etc", "submission_time": "HH:MM or null"}}"""
 
     try:
         response = groq_client.chat.completions.create(
@@ -2614,6 +3025,10 @@ Respond ONLY with JSON:
         parsed = json.loads(json_match.group() if json_match else raw)
         if detected_subject:
             parsed['subject'] = detected_subject
+
+        # ✅ Use raw topics as description — never AI-summarized
+        parsed['description'] = _topics_only
+        parsed['task_instruction'] = _task_instruction
 
         # ✅ Use smart date parser
         submission_date = None
@@ -2680,14 +3095,25 @@ Respond ONLY with JSON:
                 posted_by=student_details['student_id']
             )
 
-            date_str = submission_date.strftime('%A, %B %d')
+            date_str = submission_date.strftime('%A, %d %B')
             time_str = f" at {parsed.get('submission_time')}" if parsed.get('submission_time') else ""
             teacher_str = f"\n👨‍🏫 Teacher: {parsed.get('teacher_name')}" if parsed.get('teacher_name') else ""
 
+            # Format topics as bullet list if multiline
+            _desc = parsed['description']
+            _task_inst = parsed.get('task_instruction', '')
+            _desc_lines = [l.strip() for l in _desc.split('\n') if l.strip()]
+            if len(_desc_lines) > 1:
+                _desc_fmt = '\n'.join(f"- {l}" for l in _desc_lines)
+            else:
+                _desc_fmt = _desc
+
+            _task_display = f"\n📋 Task: {_task_inst}\n📝 Topics:\n{_desc_fmt}" if _task_inst and len(_desc_lines) > 1 else f"\n📋 Topics:\n{_desc_fmt}"
+
             await update.message.reply_text(
                 f"✅ *Homework Posted!*\n\n"
-                f"📚 Subject: {result['subject']}{teacher_str}\n"
-                f"📋 Task: {parsed['description']}\n"
+                f"📚 Subject: {result['subject']}{teacher_str}"
+                f"{_task_display}\n\n"
                 f"📅 Due: {date_str}{time_str}\n\n"
                 f"Students will get daily reminders at 8 PM! 🔔",
                 parse_mode='Markdown'
@@ -2703,10 +3129,25 @@ Respond ONLY with JSON:
             conn.close()
 
             teacher_line = f"\n👨‍🏫 Teacher: {parsed.get('teacher_name')}" if parsed.get('teacher_name') else ""
+
+            # Format topics as bullet list for broadcast
+            _b_desc = parsed['description']
+            _b_task = parsed.get('task_instruction', '')
+            _b_lines = [l.strip() for l in _b_desc.split('\n') if l.strip()]
+            if len(_b_lines) > 1:
+                _b_topics_fmt = '\n'.join(f"- {l}" for l in _b_lines)
+                if _b_task:
+                    _b_content = f"📋 Task: {_b_task}\n📝 Topics:\n{_b_topics_fmt}"
+                else:
+                    _b_content = f"📝 Topics:\n{_b_topics_fmt}"
+            else:
+                _b_content = f"📋 Task: {_b_desc}"
+
             broadcast_msg = f"""📝 *NEW HOMEWORK*
 
 📚 Subject: {result['subject']}{teacher_line}
-📋 Task: {parsed['description']}
+{_b_content}
+
 📅 Submit by: {date_str}{time_str}
 
 You'll get daily reminders at 8 PM! 🔔"""
@@ -2907,7 +3348,7 @@ async def handle_attendance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     arg = args[0].lower() if args else ''
 
     if arg in ['overall', 'semester', 'exam', 'eligibility', 'total']:
-        # Overall combined attendance
+        # Overall combined attendance — Jan + Feb + Mar
         overall = get_overall_attendance(student_id)
         if not overall:
             await update.message.reply_text("No attendance data found.")
@@ -2927,9 +3368,15 @@ async def handle_attendance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = format_attendance_for_ai(att, low) + "\n_Showing: February 2026_"
         await _safe_send(update, text, parse_mode='Markdown')
 
+    elif arg in ['march', 'mar']:
+        att = get_student_attendance(student_id, month='March', year=2026)
+        low = check_low_attendance(student_id) if att else []
+        text = format_attendance_for_ai(att, low) + "\n_Showing: March 2026_"
+        await _safe_send(update, text, parse_mode='Markdown')
+
     else:
-        # Default — latest month (February) + overall summary
-        att = get_student_attendance(student_id)
+        # Default — latest month (March) + overall summary
+        att = get_student_attendance(student_id, month='March', year=2026)
         low = check_low_attendance(student_id) if att else []
         text = format_attendance_for_ai(att, low)
 
@@ -2940,7 +3387,7 @@ async def handle_attendance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             total_att  = sum(s['total_attended'] for s in overall)
             overall_pct = round(total_att / total_held * 100, 1) if total_held > 0 else 0
             all_elig = all(s['eligible'] for s in overall)
-            text += f"\n*Overall (Jan + Feb):* {total_att}/{total_held} = *{overall_pct}%*"
+            text += f"\n*Overall (Jan + Feb + Mar):* {total_att}/{total_held} = *{overall_pct}%*"
             text += f"\nExam eligibility: {'✅ Eligible' if all_elig else '❌ Not fully eligible'}"
             text += "\n\n_For details: /attendance overall_"
         await _safe_send(update, text, parse_mode='Markdown')
@@ -2959,17 +3406,20 @@ async def handle_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if arg in ['overall', 'semester', 'total']:
         lb = get_overall_leaderboard(limit=1000)
-        title = "Overall Leaderboard (Jan + Feb)"
+        title = "Overall Leaderboard (Jan + Feb + Mar)"
     elif arg in ['january', 'jan']:
         lb = get_monthly_leaderboard(month='January', year=2026, limit=1000)
         title = "January 2026 Leaderboard"
     elif arg in ['february', 'feb']:
         lb = get_monthly_leaderboard(month='February', year=2026, limit=1000)
         title = "February 2026 Leaderboard"
+    elif arg in ['march', 'mar']:
+        lb = get_monthly_leaderboard(month='March', year=2026, limit=1000)
+        title = "March 2026 Leaderboard"
     else:
         # Default: overall
         lb = get_overall_leaderboard(limit=1000)
-        title = "Overall Leaderboard (Jan + Feb)"
+        title = "Overall Leaderboard (Jan + Feb + Mar)"
 
     if not lb or not lb['data']:
         await update.message.reply_text("No leaderboard data available yet.")
@@ -3008,15 +3458,18 @@ async def handle_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # Get both months data
         jan_raw = get_student_attendance(student_id, month='January', year=2026)
         feb_raw = get_student_attendance(student_id, month='February', year=2026)
+        mar_raw = get_student_attendance(student_id, month='March', year=2026)
         jan_subjects = jan_raw['subjects'] if jan_raw else []
         feb_subjects = feb_raw['subjects'] if feb_raw else []
+        mar_subjects = mar_raw['subjects'] if mar_raw else []
 
         # Full leaderboard for PDF
         full_lb = get_overall_leaderboard(limit=1000)
 
         pdf_path = generate_attendance_pdf(
             student_id, student_name,
-            jan_subjects, feb_subjects, full_lb
+            jan_subjects, feb_subjects, full_lb,
+            mar_subjects=mar_subjects
         )
         await processing.delete()
         with open(pdf_path, 'rb') as f_pdf:
@@ -3470,7 +3923,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reg_status = get_registration_status(telegram_id)
 
     if reg_status and reg_status['is_verified'] == 1:
-        if len(user_message) >= 8 and len(user_message) <= 15 and user_message.isalnum():
+        # ✅ Skip login check for common greetings — never show "already logged in" for them
+        _greet_skip = ['assalam', 'walaikum', 'salam', 'hello', 'hi', 'hey', 'namaste',
+                       'good morning', 'good night', 'good evening', 'good afternoon',
+                       'subah', 'raat', 'shaam', 'kaise', 'kya haal', 'sup', 'hiya']
+        _msg_lower_check = user_message.lower().strip()
+        _is_greeting = any(_msg_lower_check.startswith(g) or g in _msg_lower_check for g in _greet_skip)
+        if not _is_greeting and len(user_message) >= 8 and len(user_message) <= 15 and user_message.isalnum():
             await update.message.reply_text(
                 "⚠️ You're already logged in!\n\n"
                 "To logout and login with a different ID, use:\n"
@@ -3729,6 +4188,45 @@ STRICT RULES:
         idx = int(_hs.md5(user_message.encode()).hexdigest(), 16) % len(indicators)
         search_msg = await update.message.reply_text(indicators[idx])
 
+    # ✅ Update delete intent — CR only
+    delete_update_kw = ['update hata', 'update delete', 'update cancel', 'update hatao',
+                        'update remove', 'galat update', 'update wapas', 'update undo',
+                        'update band', 'update rok', 'hata do update', 'delete update',
+                        'update nahi chahiye', 'update mistake', 'galti ho gayi update']
+    if any(kw in user_message.lower() for kw in delete_update_kw):
+        cr_check = get_registration_status(str(telegram_id))
+        if cr_check and cr_check.get('is_verified') == 1:
+            std = get_student_details(cr_check['student_id'])
+            cr_inf = is_cr(std['student_id']) if std else {'is_cr': False}
+            if cr_inf['is_cr']:
+                updates = get_active_updates_with_ids(std['course'], std['department'], std['semester'])
+                if not updates:
+                    await update.message.reply_text("No active updates to delete.")
+                    return
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                lines = ["*Active Updates — Select to delete:*\n"]
+                keyboard_rows = []
+                for u in updates:
+                    try:
+                        from datetime import datetime as _dt
+                        d = _dt.fromisoformat(str(u['target_date'])).strftime('%d %b (%a)')
+                    except:
+                        d = str(u['target_date'])
+                    type_emoji = {'cancelled': '❌', 'postponed': '⏰', 'room_change': '🔄', 'extra_class': '➕'}.get(u['type'], '📢')
+                    subj = u['subject'] or 'All classes'
+                    label = f"{type_emoji} {subj} — {d}"
+                    lines.append(f"• {label}")
+                    keyboard_rows.append([InlineKeyboardButton(
+                        f"🗑️ Delete: {label[:40]}",
+                        callback_data=f"del_update_{u['id']}"
+                    )])
+                keyboard_rows.append([InlineKeyboardButton("❌ Cancel", callback_data="del_update_cancel")])
+                await update.message.reply_text(
+                    "\n".join(lines),
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup(keyboard_rows)
+                )
+                return
     ai_response = get_ai_response(telegram_id, user_message)
 
     if search_msg:
@@ -3830,38 +4328,68 @@ STRICT RULES:
                         success_message = (
                             f"{greeting}, *{first_name}*\n\n"
                             f"*Admin Commands*\n"
-                            f"`/addnotes` - Upload faculty notes PDF\n"
-                            f"`/addposter` - Upload event poster\n"
-                            f"`/events` - View events\n"
-                            f"`/listnotes` - View uploaded notes\n"
-                            f"`/export` - Export student data\n"
-                            f"`/stats` - Bot statistics\n\n"
+                            f"`/hw` `[subject] [topics]` — Post homework\n"
+                            f"`/lastpractical` `[group] [details]` — Log practical\n"
+                            f"`/holiday` `[date] [reason]` — Declare holiday\n"
+                            f"`/activecommands` — Edit/delete updates, HW, holidays\n"
+                            f"`/addnotes` — Upload faculty notes PDF\n"
+                            f"`/addposter` — Upload event poster\n"
+                            f"`/listnotes` — View uploaded notes\n"
+                            f"`/events` — View upcoming events\n"
+                            f"`/export` — Download student data (Excel)\n"
+                            f"`/stats` — Bot usage analytics\n"
+                            f"`/testmorning` — Test morning briefing now\n\n"
+                            f"*Student Commands also available to you*\n"
+                            f"`/attendance` · `/leaderboard` · `/syllabus` · `/progress`\n\n"
                             f"_Welcome to Zei · Powered by Zephy Intelligence_"
                         )
                     elif cr_info['is_cr']:
                         success_message = (
                             f"{greeting}, *{first_name}* (CR){urdu_display}\n\n"
                             f"*CR Commands*\n"
-                            f"`/update` - Cancel / shift / room change\n"
-                            f"`/hw` - Post homework\n"
-                            f"`/lasttheory` - Log theory class\n"
-                            f"`/lastpractical` - Log practical class\n"
-                            f"`/complete` - Mark unit complete\n\n"
-                            f"*Or just type:*\n"
-                            f"Kal F&B cancel hai\n"
-                            f"Akash sir ne cuts padhaye\n\n"
-                            f"`/events` - `/classnotes F&B 1` - `/listnotes`\n\n"
+                            f"`/update` `[message]` — Cancel/shift/room change\n"
+                            f"  _e.g. /update Kal F&B cancel hai_\n"
+                            f"`/hw` `[subject] [topics]. Submit: [date]` — Post homework\n"
+                            f"  _e.g. /hw complete housekeeping journal... Submit: Monday_\n"
+                            f"`/lasttheory` `[teacher] [topics]` — Log theory class\n"
+                            f"  _e.g. /lasttheory Akash sir - knife cuts_\n"
+                            f"`/complete` `[subject] Unit [n]` — Mark unit complete\n"
+                            f"  _e.g. /complete F&B Unit 2_\n"
+                            f"`/holiday` `[date] [reason]` — Declare holiday\n"
+                            f"  _e.g. /holiday tomorrow Eid_\n"
+                            f"`/activecommands` — View/delete all active updates, HW\n\n"
+                            f"*Natural language bhi works:*\n"
+                            f"Kal F&B cancel hai → auto-detected\n"
+                            f"Akash sir ne aaj cuts padhaye → auto-saved\n\n"
+                            f"*Student Commands*\n"
+                            f"`/attendance` · `/leaderboard` · `/syllabus` · `/progress`\n"
+                            f"`/events` · `/classnotes F&B 1` · `/listnotes`\n\n"
                             f"_Welcome to Zei · Powered by Zephy Intelligence_"
                         )
                     else:
                         success_message = (
                             f"{greeting}, *{first_name}*{urdu_display}\n\n"
-                            f"*Ask me anything:*\n"
-                            f"Monday ka schedule?\n"
-                            f"F&B unit 1 explain karo\n"
-                            f"Meri attendance?\n"
-                            f"Any upcoming events?\n\n"
-                            f"`/events` - `/classnotes F&B 1` - `/listnotes`\n\n"
+                            f"*Just ask me anything — examples:*\n"
+                            f"Aaj ka schedule kya hai?\n"
+                            f"F&B Unit 2 samjha do\n"
+                            f"Meri attendance kitni hai?\n"
+                            f"Kya homework pending hai?\n"
+                            f"Last practical mein kya banaya tha?\n"
+                            f"Chicken tikka recipe batao\n\n"
+                            f"*Commands:*\n"
+                            f"`/attendance` — Monthly attendance + eligibility\n"
+                            f"  _/attendance january · february · march · overall_\n"
+                            f"`/leaderboard` — Class attendance ranking + PDF report\n"
+                            f"  _/leaderboard january · february · march · overall_\n"
+                            f"`/syllabus` — Full semester syllabus with progress\n"
+                            f"`/progress` — Visual progress bar per subject\n"
+                            f"`/events` — Upcoming college events with posters\n"
+                            f"`/classnotes [subject] [unit]` — Faculty uploaded notes\n"
+                            f"  _e.g. /classnotes F&B 1_\n"
+                            f"`/listnotes` — See all available notes\n"
+                            f"`/speak [text]` — Convert text to voice\n"
+                            f"`/logout` — Switch account\n\n"
+                            f"_Voice notes work too! 🎤_\n\n"
                             f"_Welcome to Zei · Powered by Zephy Intelligence_"
                         )
                     
@@ -3977,7 +4505,7 @@ Respond ONLY with JSON:
         )
 
         if result['success']:
-            date_display = target_date.strftime('%A, %B %d')
+            date_display = target_date.strftime('%A, %d %B')
 
             # ✅ Use AI generated message if available, else build smart one
             if ai_broadcast_msg:
@@ -4031,6 +4559,96 @@ Respond ONLY with JSON:
         conn.commit()
         conn.close()
         await query.edit_message_text("❌ Update cancelled.")
+
+    elif query.data == 'ac_close':
+        await query.edit_message_text("✅ Dashboard closed.")
+
+    elif query.data == 'del_update_cancel':
+        await query.edit_message_text("✅ No updates deleted.")
+
+    elif query.data.startswith('del_update_'):
+        update_id = int(query.data.split('_')[2])
+        success = delete_class_update(update_id)
+        if success:
+            reg_status_del = get_registration_status(telegram_id)
+            if reg_status_del:
+                std_del = get_student_details(reg_status_del['student_id'])
+                if std_del:
+                    conn_del = sqlite3.connect('students.db', timeout=20)
+                    c_del = conn_del.cursor()
+                    c_del.execute('''SELECT ru.telegram_id FROM registered_users ru
+                                     JOIN master_students ms ON ru.student_id = ms.student_id
+                                     WHERE ms.course = ? AND ms.department = ? AND ms.semester = ?
+                                     AND ru.is_verified = 1''',
+                                  (std_del['course'], std_del['department'], std_del['semester']))
+                    students_del = [r[0] for r in c_del.fetchall()]
+                    conn_del.close()
+                    notify_msg = "📢 *Update Withdrawn*\n\nCR ne ek class update wapas le liya hai. Pehle wali schedule follow karo."
+                    for tid in students_del:
+                        try:
+                            await context.bot.send_message(chat_id=tid, text=notify_msg, parse_mode='Markdown')
+                        except:
+                            pass
+            await query.edit_message_text("✅ Update deleted. Students notified.")
+        else:
+            await query.edit_message_text("❌ Could not delete update.")
+
+    elif query.data.startswith('del_hw_'):
+        hw_id = int(query.data.split('_')[2])
+        conn_hw = sqlite3.connect('students.db', timeout=20)
+        c_hw = conn_hw.cursor()
+        try:
+            c_hw.execute("UPDATE homework_log SET is_active = 0 WHERE id = ?", (hw_id,))
+            conn_hw.commit()
+            conn_hw.close()
+            await query.edit_message_text("✅ Homework deleted. Students won't see it anymore.")
+        except Exception as e:
+            conn_hw.close()
+            await query.edit_message_text(f"❌ Could not delete homework: {e}")
+
+    elif query.data.startswith('del_holiday_'):
+        holiday_id = int(query.data.split('_')[2])
+        conn_hol = sqlite3.connect('students.db', timeout=20)
+        c_hol = conn_hol.cursor()
+        try:
+            c_hol.execute("DELETE FROM holidays WHERE id = ?", (holiday_id,))
+            conn_hol.commit()
+            conn_hol.close()
+            await query.edit_message_text("✅ Holiday deleted.")
+        except Exception as e:
+            conn_hol.close()
+            await query.edit_message_text(f"❌ Could not delete holiday: {e}")
+
+    elif query.data == 'del_update_cancel':
+        await query.edit_message_text("✅ No updates deleted.")
+
+    elif query.data.startswith('del_update_'):
+        update_id = int(query.data.split('_')[2])
+        success = delete_class_update(update_id)
+        if success:
+            # Notify all students that update is withdrawn
+            reg_status_del = get_registration_status(telegram_id)
+            if reg_status_del:
+                std_del = get_student_details(reg_status_del['student_id'])
+                if std_del:
+                    conn_del = sqlite3.connect('students.db', timeout=20)
+                    c_del = conn_del.cursor()
+                    c_del.execute('''SELECT ru.telegram_id FROM registered_users ru
+                                     JOIN master_students ms ON ru.student_id = ms.student_id
+                                     WHERE ms.course = ? AND ms.department = ? AND ms.semester = ?
+                                     AND ru.is_verified = 1''',
+                                  (std_del['course'], std_del['department'], std_del['semester']))
+                    students_del = [r[0] for r in c_del.fetchall()]
+                    conn_del.close()
+                    notify_msg = "📢 *Update Withdrawn*\n\nCR ne ek class update wapas le liya hai. Pehle wali schedule follow karo."
+                    for tid in students_del:
+                        try:
+                            await context.bot.send_message(chat_id=tid, text=notify_msg, parse_mode='Markdown')
+                        except:
+                            pass
+            await query.edit_message_text("✅ Update deleted. Students notified.")
+        else:
+            await query.edit_message_text("❌ Could not delete update.")
 
 # ============================================================
 # MAIN
@@ -4865,79 +5483,106 @@ async def send_morning_briefing(context: ContextTypes.DEFAULT_TYPE):
         news_text = ""
         news_voice_text = ""
 
+    # ✅ Check if today is holiday or weekend — skip schedule, only news
+    today_date_obj = datetime.now().date()
+    today_weekday = today_date_obj.weekday()  # 5=Saturday, 6=Sunday
+    holiday_info = get_holiday(today_date_obj)
+    is_no_class_day = (today_weekday >= 5) or (holiday_info is not None)
+
     for row in students:
         tg_id, name, student_id, course, dept, semester, group = row
         first_name = name.split()[0] if name else "Student"
 
         try:
-            # Get today's schedule
-            schedule = get_today_schedule(course, dept, semester, group)
+            if is_no_class_day:
+                # ✅ Holiday / Weekend — only send news, no schedule
+                if today_weekday == 5:
+                    day_line = "🌙 It's Saturday — no classes today!"
+                    voice_day = "Happy Saturday! No classes today."
+                elif today_weekday == 6:
+                    day_line = "☀️ It's Sunday — enjoy your day off!"
+                    voice_day = "Happy Sunday! Enjoy your day off."
+                else:
+                    day_line = f"🏖️ *Holiday Today!*\n_{holiday_info['reason']}_"
+                    voice_day = f"Today is a holiday. {holiday_info['reason']}. Enjoy!"
 
-            # Build schedule text
-            if schedule:
-                sched_lines = []
-                for cls in schedule:
-                    sched_lines.append(
-                        f"• {cls['start_time']}-{cls['end_time']}: "
-                        f"{cls['subject']} ({cls['teacher']})"
-                    )
-                sched_text = "\n".join(sched_lines)
-                sched_voice = (
-                    f"You have {len(schedule)} classes today. "
-                    + ", ".join(f"{c['subject']} at {c['start_time']}" for c in schedule[:3])
+                text_msg = (
+                    f"Good morning, *{first_name}*! ☀️\n"
+                    f"_{today_date}_\n\n"
+                    f"{day_line}\n\n"
                 )
+                if news_text:
+                    text_msg += f"*Top News*\n{news_text}\n\n"
+                text_msg += "_Powered by Zei · Zephy Intelligence_"
+
+                await context.bot.send_message(chat_id=tg_id, text=text_msg, parse_mode='Markdown')
+
+                # Only news voice — no schedule voice
+                if news_voice_text:
+                    voice_news = f"Good morning {first_name}! {voice_day} Here are today's top 3 news. {news_voice_text}"[:490]
+                    audio_news = await sarvam_tts(voice_news)
+                    if audio_news:
+                        await context.bot.send_voice(
+                            chat_id=tg_id,
+                            voice=_io.BytesIO(audio_news),
+                            caption=""
+                        )
             else:
-                sched_text = "_No classes today — enjoy your day!_ 🌟"
-                sched_voice = "You have no classes today. Enjoy your day!"
+                # ✅ Regular day — schedule + news
+                schedule = get_today_schedule(course, dept, semester, group)
 
-            # Build text message
-            text_msg = (
-                f"Good morning, *{first_name}*! ☀️\n"
-                f"_{today_date}_\n\n"
-                f"*Today's Schedule ({today_name})*\n"
-                f"{sched_text}\n\n"
-            )
-            if news_text:
-                text_msg += f"*Top News*\n{news_text}\n\n"
-            text_msg += "_Powered by Zei · Zephy Intelligence_"
+                if schedule:
+                    sched_lines = []
+                    for cls in schedule:
+                        sched_lines.append(
+                            f"• {cls['start_time']}-{cls['end_time']}: "
+                            f"{cls['subject']} ({cls['teacher']})"
+                        )
+                    sched_text = "\n".join(sched_lines)
+                    sched_voice = (
+                        f"You have {len(schedule)} classes today. "
+                        + ", ".join(f"{c['subject']} at {c['start_time']}" for c in schedule[:3])
+                    )
+                else:
+                    sched_text = "_No classes today — enjoy your day!_ 🌟"
+                    sched_voice = "You have no classes today. Enjoy your day!"
 
-            # Send text
-            await context.bot.send_message(
-                chat_id=tg_id,
-                text=text_msg,
-                parse_mode='Markdown'
-            )
-
-            # Motivational line for no-class days
-            motivational = ""
-            if not schedule:
-                motivational = " Make the most of your free day!"
-
-            # Voice 1: Greeting + schedule (max 490 chars)
-            voice1 = (
-                f"Good morning {first_name}! "
-                f"Today is {today_name}, {today_date}. "
-                f"{sched_voice}.{motivational}"
-            )[:490]
-
-            audio1 = await sarvam_tts(voice1)
-            if audio1:
-                await context.bot.send_voice(
-                    chat_id=tg_id,
-                    voice=_io.BytesIO(audio1),
-                    caption="🔊 Good morning!"
+                text_msg = (
+                    f"Good morning, *{first_name}*! ☀️\n"
+                    f"_{today_date}_\n\n"
+                    f"*Today's Schedule ({today_name})*\n"
+                    f"{sched_text}\n\n"
                 )
+                if news_text:
+                    text_msg += f"*Top News*\n{news_text}\n\n"
+                text_msg += "_Powered by Zei · Zephy Intelligence_"
 
-            # Voice 2: News (only if available, max 490 chars)
-            if news_voice_text:
-                voice2 = f"Here are today's top 3 news. {news_voice_text}"[:490]
-                audio2 = await sarvam_tts(voice2)
-                if audio2:
+                await context.bot.send_message(chat_id=tg_id, text=text_msg, parse_mode='Markdown')
+
+                motivational = "" if schedule else " Make the most of your free day!"
+                voice1 = (
+                    f"Good morning {first_name}! "
+                    f"Today is {today_name}, {today_date}. "
+                    f"{sched_voice}.{motivational}"
+                )[:490]
+
+                audio1 = await sarvam_tts(voice1)
+                if audio1:
                     await context.bot.send_voice(
                         chat_id=tg_id,
-                        voice=_io.BytesIO(audio2),
-                        caption="📰 Top news"
+                        voice=_io.BytesIO(audio1),
+                        caption=""
                     )
+
+                if news_voice_text:
+                    voice2 = f"Here are today's top 3 news. {news_voice_text}"[:490]
+                    audio2 = await sarvam_tts(voice2)
+                    if audio2:
+                        await context.bot.send_voice(
+                            chat_id=tg_id,
+                            voice=_io.BytesIO(audio2),
+                            caption=""
+                        )
 
         except Exception as e:
             print(f"[Morning brief error] {tg_id}: {e}")
@@ -4952,8 +5597,9 @@ async def handle_test_morning(update: Update, context: ContextTypes.DEFAULT_TYPE
     await send_morning_briefing(context)
 
 
-def generate_attendance_pdf(student_id, student_name, jan_data, feb_data, leaderboard_data):
-    """Generate SpaceX-themed B&W attendance PDF with line chart + leaderboard"""
+def generate_attendance_pdf(student_id, student_name, jan_data, feb_data, leaderboard_data, mar_subjects=None):
+    """Generate SpaceX-themed B&W attendance PDF with line chart + leaderboard (Jan+Feb+Mar)"""
+    mar_data = mar_subjects or []
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -4994,7 +5640,7 @@ def generate_attendance_pdf(student_id, student_name, jan_data, feb_data, leader
     jan_pcts = []
     feb_pcts = []
 
-    all_subjects = list({s['subject'] for s in (jan_data or []) + (feb_data or [])})
+    all_subjects = list({s['subject'] for s in (jan_data or []) + (feb_data or []) + mar_data})
     all_subjects.sort()
     short_subjects = [s.replace('Food Production Foundation - II', 'Food Prod')
                        .replace('Food & Beverage Service Foundation - II', 'F&B')
@@ -5002,11 +5648,14 @@ def generate_attendance_pdf(student_id, student_name, jan_data, feb_data, leader
                        .replace('Housekeeping Skills - II', 'Housekeeping')
                        .replace('Personality Development and Grooming', 'Personality') for s in all_subjects]
 
+    mar_pcts = []
     for subj in all_subjects:
         jan_pct = next((s['percentage'] for s in (jan_data or []) if s['subject'] == subj), 0)
         feb_pct = next((s['percentage'] for s in (feb_data or []) if s['subject'] == subj), 0)
+        mar_pct = next((s['percentage'] for s in mar_data if s['subject'] == subj), 0)
         jan_pcts.append(jan_pct)
         feb_pcts.append(feb_pct)
+        mar_pcts.append(mar_pct)
 
     # Create figure — SpaceX style
     fig = plt.figure(figsize=(10, 4), facecolor='#0a0a0a')
@@ -5023,6 +5672,9 @@ def generate_attendance_pdf(student_id, student_name, jan_data, feb_data, leader
     if feb_pcts:
         ax.plot(x, feb_pcts, 's--', color='#888888', linewidth=2, markersize=6,
                 markerfacecolor='#888888', label='February', zorder=3)
+    if any(mar_pcts):
+        ax.plot(x, mar_pcts, '^:', color='#cccccc', linewidth=2, markersize=6,
+                markerfacecolor='#cccccc', label='March', zorder=3)
 
     # 75% threshold line
     ax.axhline(y=75, color='#444444', linestyle=':', linewidth=1.5, alpha=0.8, label='75% threshold')
@@ -5046,6 +5698,10 @@ def generate_attendance_pdf(student_id, student_name, jan_data, feb_data, leader
                           xytext=(0, 10), ha='center', color='#ffffff', fontsize=7)
         if f: ax.annotate(f'{f:.0f}%', (i, f), textcoords="offset points",
                           xytext=(0, -16), ha='center', color='#aaaaaa', fontsize=7)
+    if any(mar_pcts):
+        for i, m in enumerate(mar_pcts):
+            if m: ax.annotate(f'{m:.0f}%', (i, m), textcoords="offset points",
+                              xytext=(0, 10), ha='center', color='#cccccc', fontsize=7)
 
     plt.tight_layout(pad=0.5)
 
@@ -5092,7 +5748,7 @@ def generate_attendance_pdf(student_id, student_name, jan_data, feb_data, leader
     story.append(Spacer(1, 12))
     story.append(hr('#0a0a0a', 1.5, before=0, after=12))
     story.append(Paragraph(f'Student: <b>{student_name}</b>', body_s))
-    story.append(Paragraph(f'ID: {student_id}  ·  Period: January – February 2026', sub_s))
+    story.append(Paragraph(f'ID: {student_id}  ·  Period: January – March 2026', sub_s))
     story.append(Spacer(1, 14))
 
     # Chart
@@ -5107,7 +5763,7 @@ def generate_attendance_pdf(student_id, student_name, jan_data, feb_data, leader
     story.append(Paragraph('SUBJECT BREAKDOWN', S('ch2', fontName=B, fontSize=9, textColor=GRAY, letterSpacing=3)))
     story.append(hr('#cccccc', 0.4, before=2, after=6))
 
-    tbl_data = [['Subject', 'Jan', 'Feb', 'Overall', 'Status']]
+    tbl_data = [['Subject', 'Jan', 'Feb', 'Mar', 'Overall', 'Status']]
     for subj in all_subjects:
         short = subj.replace('Food Production Foundation - II', 'Food Production') \
                     .replace('Food & Beverage Service Foundation - II', 'F&B Service') \
@@ -5116,20 +5772,24 @@ def generate_attendance_pdf(student_id, student_name, jan_data, feb_data, leader
                     .replace('Personality Development and Grooming', 'Personality Dev')
         j = next((s for s in (jan_data or []) if s['subject'] == subj), None)
         f = next((s for s in (feb_data or []) if s['subject'] == subj), None)
+        m = next((s for s in mar_data if s['subject'] == subj), None)
         j_str = f"{j['percentage']:.1f}%" if j else '—'
-        f_str = f"{f['percentage']:.1f}%" if f else '—' 
+        f_str = f"{f['percentage']:.1f}%" if f else '—'
+        m_str = f"{m['percentage']:.1f}%" if m else '—'
         # Overall
         j_held = j['classes_held'] if j else 0
         j_att  = j['classes_attended'] if j else 0
         f_held = f['classes_held'] if f else 0
         f_att  = f['classes_attended'] if f else 0
-        total_held = j_held + f_held
-        total_att  = j_att + f_att
+        m_held = m['classes_held'] if m else 0
+        m_att  = m['classes_attended'] if m else 0
+        total_held = j_held + f_held + m_held
+        total_att  = j_att + f_att + m_att
         overall_pct = round(total_att / total_held * 100, 1) if total_held > 0 else 0
         status = '✓' if overall_pct >= 75 else '✗'
-        tbl_data.append([short, j_str, f_str, f'{overall_pct:.1f}%', status])
+        tbl_data.append([short, j_str, f_str, m_str, f'{overall_pct:.1f}%', status])
 
-    tbl = Table(tbl_data, colWidths=[5.5*cm, 2.2*cm, 2.2*cm, 2.2*cm, 1.5*cm])
+    tbl = Table(tbl_data, colWidths=[4.8*cm, 1.8*cm, 1.8*cm, 1.8*cm, 2*cm, 1.4*cm])
     tbl.setStyle(TableStyle([
         ('FONTNAME',    (0,0), (-1,0), B),
         ('FONTSIZE',    (0,0), (-1,-1), 9),
@@ -5205,6 +5865,315 @@ def generate_attendance_pdf(student_id, student_name, jan_data, feb_data, leader
 
     return pdf_path
 
+def delete_class_update(update_id):
+    """Soft delete a class update by ID"""
+    conn = sqlite3.connect('students.db', timeout=20)
+    c = conn.cursor()
+    try:
+        c.execute("UPDATE class_updates SET is_active = 0 WHERE id = ?", (update_id,))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        conn.close()
+        print(f"[Delete update error] {e}")
+        return False
+
+
+def get_active_updates_with_ids(course, department, semester):
+    """Get active updates with their DB IDs for deletion"""
+    conn = sqlite3.connect('students.db', timeout=20)
+    c = conn.cursor()
+    today = datetime.now().date()
+    try:
+        c.execute('''SELECT id, update_type, subject_name, class_type,
+                            target_date, new_time, room_change, posted_at
+                     FROM class_updates
+                     WHERE course = ? AND department = ? AND semester = ?
+                     AND is_active = 1 AND target_date >= ?
+                     ORDER BY target_date, posted_at DESC''',
+                  (course, department, semester, today))
+        rows = c.fetchall()
+        conn.close()
+        return [{'id': r[0], 'type': r[1], 'subject': r[2], 'class_type': r[3],
+                 'target_date': r[4], 'new_time': r[5], 'room_change': r[6],
+                 'posted_at': r[7]} for r in rows]
+    except Exception as e:
+        conn.close()
+        return []
+
+
+# ============================================================
+# ✅ /holiday COMMAND — Admin + CR declare holiday
+# Usage: /holiday 2026-04-05 Eid holiday
+#        /holiday tomorrow College band hai
+#        /holiday (shows upcoming holidays)
+# ============================================================
+async def handle_holiday(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    telegram_id = update.effective_user.id
+    reg_status = get_registration_status(telegram_id)
+
+    if not reg_status or reg_status['is_verified'] == 0:
+        await update.message.reply_text("❌ Please register first!")
+        return
+
+    student_details = get_student_details(reg_status['student_id'])
+    cr_info = is_cr(student_details['student_id'])
+
+    if not is_admin(telegram_id) and not cr_info['is_cr']:
+        await update.message.reply_text("❌ Only Admin or CR can declare holidays.")
+        return
+
+    text = update.message.text.replace('/holiday', '').strip()
+
+    # No args → show upcoming holidays
+    if not text:
+        upcoming = get_upcoming_holidays()
+        if not upcoming:
+            await update.message.reply_text(
+                "📅 *No upcoming holidays declared.*\n\n"
+                "Usage:\n"
+                "`/holiday tomorrow Eid holiday`\n"
+                "`/holiday 2026-04-14 Baisakhi`\n"
+                "`/holiday 5th April College band`",
+                parse_mode='Markdown'
+            )
+            return
+        lines = ["📅 *Upcoming Holidays:*\n"]
+        for h in upcoming:
+            try:
+                d = datetime.strptime(h['date'], '%Y-%m-%d')
+                date_str = d.strftime('%A, %d %B %Y')
+            except:
+                date_str = h['date']
+            lines.append(f"🏖️ {date_str}\n   _{h['reason']}_")
+        await update.message.reply_text("\n\n".join(lines), parse_mode='Markdown')
+        return
+
+    # Parse date + reason from text
+    import re as _re
+    today = datetime.now().date()
+
+    # Try to extract date
+    holiday_date = None
+    reason = text
+
+    # Check for "tomorrow" / "kal"
+    if any(w in text.lower() for w in ['tomorrow', 'kal ']):
+        holiday_date = today + timedelta(days=1)
+        reason = _re.sub(r'(?:tomorrow|kal)\s*', '', text, flags=_re.IGNORECASE).strip()
+    elif any(w in text.lower() for w in ['today', 'aaj']):
+        holiday_date = today
+        reason = _re.sub(r'(?:today|aaj)\s*', '', text, flags=_re.IGNORECASE).strip()
+    else:
+        # Try YYYY-MM-DD
+        iso_match = _re.search(r'(\d{4}-\d{2}-\d{2})', text)
+        if iso_match:
+            try:
+                holiday_date = datetime.strptime(iso_match.group(1), '%Y-%m-%d').date()
+                reason = text.replace(iso_match.group(1), '').strip()
+            except:
+                pass
+
+        # Try "5th April", "5 april", "april 5"
+        if not holiday_date:
+            month_map = {
+                'jan': 1, 'january': 1, 'feb': 2, 'february': 2,
+                'mar': 3, 'march': 3, 'apr': 4, 'april': 4,
+                'may': 5, 'jun': 6, 'june': 6, 'jul': 7, 'july': 7,
+                'aug': 8, 'august': 8, 'sep': 9, 'september': 9,
+                'oct': 10, 'october': 10, 'nov': 11, 'november': 11,
+                'dec': 12, 'december': 12
+            }
+            date_match = _re.search(
+                r'(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)|([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?',
+                text.lower()
+            )
+            if date_match:
+                g = date_match.groups()
+                try:
+                    if g[0] and g[1]:
+                        day, mon = int(g[0]), month_map.get(g[1][:3])
+                    else:
+                        mon, day = month_map.get(g[2][:3]), int(g[3])
+                    if mon:
+                        holiday_date = datetime(today.year, mon, day).date()
+                        reason = text[date_match.end():].strip() or text[:date_match.start()].strip()
+                except:
+                    pass
+
+    if not holiday_date:
+        await update.message.reply_text(
+            "❌ Could not detect date.\n\n"
+            "Try:\n`/holiday tomorrow Eid holiday`\n`/holiday 5th April Baisakhi`",
+            parse_mode='Markdown'
+        )
+        return
+
+    if not reason:
+        reason = "Holiday declared by CR/Admin"
+
+    # Save holiday
+    success = save_holiday(holiday_date, reason, telegram_id)
+    if not success:
+        await update.message.reply_text("❌ Could not save holiday. Try again.")
+        return
+
+    # Format date nicely
+    try:
+        date_str = holiday_date.strftime('%A, %d %B %Y')
+    except:
+        date_str = str(holiday_date)
+
+    # Broadcast to all students
+    broadcast = (
+        f"🏖️ *Holiday Announced!*\n\n"
+        f"📅 {date_str}\n"
+        f"📝 Reason: {reason}\n\n"
+        f"_No classes on this day. Enjoy!_ 🎉"
+    )
+
+    conn = sqlite3.connect('students.db')
+    c = conn.cursor()
+    c.execute('''SELECT ru.telegram_id FROM registered_users ru
+                 JOIN master_students ms ON ru.student_id = ms.student_id
+                 WHERE ms.course = ? AND ms.department = ? AND ms.semester = ? AND ru.is_verified = 1''',
+              (student_details['course'], student_details['department'], student_details['semester']))
+    students = [row[0] for row in c.fetchall()]
+    conn.close()
+
+    count = 0
+    for tid in students:
+        try:
+            await context.bot.send_message(chat_id=tid, text=broadcast, parse_mode='Markdown')
+            count += 1
+        except:
+            pass
+
+    await update.message.reply_text(
+        f"✅ *Holiday saved!*\n\n"
+        f"📅 {date_str}\n"
+        f"📝 {reason}\n"
+        f"👥 Notified {count} students",
+        parse_mode='Markdown'
+    )
+
+
+# ============================================================
+# ✅ /activecommands — Show all active CR/Admin posted data with edit/delete
+# ============================================================
+async def handle_active_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    telegram_id = update.effective_user.id
+    reg_status = get_registration_status(telegram_id)
+
+    if not reg_status or reg_status['is_verified'] == 0:
+        await update.message.reply_text("❌ Please register first!")
+        return
+
+    student_details = get_student_details(reg_status['student_id'])
+    cr_info = is_cr(student_details['student_id'])
+
+    if not is_admin(telegram_id) and not cr_info['is_cr']:
+        await update.message.reply_text("❌ Only Admin or CR can view active commands.")
+        return
+
+    lines = ["*📋 Active Commands Dashboard*\n"]
+    keyboard_rows = []
+
+    # 1. Active class updates
+    conn = sqlite3.connect('students.db', timeout=20)
+    c = conn.cursor()
+    today = datetime.now().date()
+    c.execute('''SELECT id, update_type, subject_name, target_date, class_type
+                 FROM class_updates
+                 WHERE course = ? AND department = ? AND semester = ?
+                 AND is_active = 1 AND target_date >= ?
+                 ORDER BY target_date''',
+              (student_details['course'], student_details['department'],
+               student_details['semester'], today))
+    updates = c.fetchall()
+
+    if updates:
+        lines.append("*📢 Class Updates:*")
+        for upd in updates:
+            uid, utype, subj, udate, uclass = upd
+            type_em = {'cancelled': '❌', 'postponed': '⏰', 'room_change': '🔄', 'extra_class': '➕'}.get(utype, '📢')
+            try:
+                d = datetime.strptime(str(udate), '%Y-%m-%d').strftime('%d %b (%a)')
+            except:
+                d = str(udate)
+            subj_short = (subj or 'All classes')[:35]
+            lines.append(f"  {type_em} {subj_short} — {d}")
+            keyboard_rows.append([InlineKeyboardButton(
+                f"🗑️ Delete: {type_em} {subj_short[:25]}",
+                callback_data=f"del_update_{uid}"
+            )])
+    else:
+        lines.append("*📢 Class Updates:* None active")
+
+    # 2. Active homework
+    c.execute('''SELECT id, subject_name, description, submission_date
+                 FROM homework_log
+                 WHERE course = ? AND department = ? AND semester = ?
+                 AND submission_date >= ?
+                 ORDER BY submission_date''',
+              (student_details['course'], student_details['department'],
+               student_details['semester'], str(today)))
+    homeworks = c.fetchall()
+
+    if homeworks:
+        lines.append("\n*📝 Homework:*")
+        for hw in homeworks:
+            hwid, hwsubj, hwdesc, hwdate = hw
+            try:
+                d = datetime.strptime(str(hwdate), '%Y-%m-%d').strftime('%d %b (%a)')
+            except:
+                d = str(hwdate)
+            desc_short = hwdesc[:30] if hwdesc else ''
+            subj_short = (hwsubj or '')[:25]
+            lines.append(f"  📋 {subj_short} — Due {d}")
+            keyboard_rows.append([InlineKeyboardButton(
+                f"🗑️ Delete HW: {subj_short[:20]} ({d})",
+                callback_data=f"del_hw_{hwid}"
+            )])
+    else:
+        lines.append("\n*📝 Homework:* None active")
+
+    # 3. Upcoming holidays
+    upcoming_hols = get_upcoming_holidays(days_ahead=30)
+    if upcoming_hols:
+        lines.append("\n*🏖️ Holidays:*")
+        for h in upcoming_hols:
+            conn2 = sqlite3.connect('students.db', timeout=20)
+            c2 = conn2.cursor()
+            c2.execute("SELECT id FROM holidays WHERE holiday_date = ?", (h['date'],))
+            hrow = c2.fetchone()
+            conn2.close()
+            hid = hrow[0] if hrow else None
+            try:
+                d = datetime.strptime(h['date'], '%Y-%m-%d').strftime('%d %b (%a)')
+            except:
+                d = h['date']
+            lines.append(f"  🏖️ {d} — {h['reason'][:30]}")
+            if hid:
+                keyboard_rows.append([InlineKeyboardButton(
+                    f"🗑️ Delete Holiday: {d}",
+                    callback_data=f"del_holiday_{hid}"
+                )])
+    else:
+        lines.append("\n*🏖️ Holidays:* None upcoming")
+
+    conn.close()
+
+    keyboard_rows.append([InlineKeyboardButton("❌ Close", callback_data="ac_close")])
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(keyboard_rows)
+    )
+
+
 def main():
     load_student_data()
     setup_timetable()
@@ -5270,6 +6239,8 @@ def main():
     application.add_handler(CommandHandler("listnotes", handle_listnotes))
     application.add_handler(CommandHandler("testmorning", handle_test_morning))
     application.add_handler(CommandHandler("classnotes", handle_classnotes))
+    application.add_handler(CommandHandler("holiday", handle_holiday))
+    application.add_handler(CommandHandler("activecommands", handle_active_commands))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_button_callback))
 
