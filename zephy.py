@@ -49,13 +49,7 @@ from timetable_functions import (
 # ✅ NOTES SYSTEM — PDF notes upload + ChromaDB search
 
 
-# Configuration
-BOT_TOKEN = "8711762148:AAGyEYoGMfpipRe5ZX8DnNl_gqrR05TZ96A"
-GROQ_API_KEY = "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"
-SENDER_EMAIL = "zei.zephyai@gmail.com"
-SENDER_PASSWORD = "ltjt fyqz qovz ruoo"
-ADMIN_ID = 6011716383
-SARVAM_API_KEY = "sk_i8874hi4_SVcKzuJgjl3E97gFE5Cru6Tz"
+
 
 # Initialize Groq client
 groq_client = Groq(api_key=GROQ_API_KEY)
